@@ -4,6 +4,7 @@
  * Copyright (C) 2025, Charles Chiou
  */
 
+#include <assert.h>
 #include <pico/stdlib.h>
 #include <pico/bootrom.h>
 #include <hardware/watchdog.h>
@@ -11,6 +12,9 @@
 #include <hardware/adc.h>
 #include <hardware/clocks.h>
 #include <pico/cyw43_arch.h>
+#include <FreeRTOS.h>
+#include <semphr.h>
+#include <task.h>
 #include <pico-plat.h>
 #include <PicoPlatform.hxx>
 
@@ -21,17 +25,53 @@ shared_ptr<PicoPlatform> PicoPlatform::pp = NULL;
 /* -1 unknown, 0 Pico, 1 Pico W */
 static int s_hasW = -1;
 static int s_cyw43_ok = 0;
+static SemaphoreHandle_t s_get_mutex = NULL;
+static shared_ptr<PicoPlatform> (*s_factory)(void) = NULL;
+
+static void lock_get(void)
+{
+    if (s_get_mutex == NULL) {
+        s_get_mutex = xSemaphoreCreateMutex();
+        assert(s_get_mutex != NULL);
+    }
+    if (xTaskGetSchedulerState() == taskSCHEDULER_RUNNING) {
+        xSemaphoreTake(s_get_mutex, portMAX_DELAY);
+    }
+}
+
+static void unlock_get(void)
+{
+    if ((s_get_mutex != NULL) &&
+        (xTaskGetSchedulerState() == taskSCHEDULER_RUNNING)) {
+        xSemaphoreGive(s_get_mutex);
+    }
+}
+
+void PicoPlatform::setFactory(shared_ptr<PicoPlatform> (*factory)(void))
+{
+    s_factory = factory;
+}
 
 shared_ptr<PicoPlatform> PicoPlatform::get(void)
 {
-    if (PicoPlatform::pp == NULL) {
-        PicoPlatform::pp =
-            shared_ptr<PicoPlatform>(new PicoPlatform(), [](PicoPlatform *p) {
-                delete p;
-            });
-    }
+    shared_ptr<PicoPlatform> result;
 
-    return PicoPlatform::pp;
+    lock_get();
+    if (PicoPlatform::pp == NULL) {
+        if (s_factory != NULL) {
+            PicoPlatform::pp = s_factory();
+        } else {
+            PicoPlatform::pp =
+                shared_ptr<PicoPlatform>(new PicoPlatform(),
+                                         [](PicoPlatform *p) {
+                    delete p;
+                });
+        }
+    }
+    result = PicoPlatform::pp;
+    unlock_get();
+
+    return result;
 }
 
 bool PicoPlatform::detectWireless(void)
@@ -70,6 +110,10 @@ bool PicoPlatform::detectWireless(void)
 
 bool PicoPlatform::initWireless(void)
 {
+    /* Create the get() mutex on the main thread before the scheduler. */
+    lock_get();
+    unlock_get();
+
     if (!detectWireless()) {
         s_cyw43_ok = 0;
         return false;

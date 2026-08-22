@@ -15,6 +15,7 @@ class PicoPlatform : public std::enable_shared_from_this<PicoPlatform> {
 public:
 
     static std::shared_ptr<PicoPlatform> get(void);
+    static void setFactory(std::shared_ptr<PicoPlatform> (*factory)(void));
 
     /*
      * Distinguish Pico vs Pico W from ADC3. Must run before
