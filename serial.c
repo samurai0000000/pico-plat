@@ -15,6 +15,7 @@
 #include <hardware/gpio.h>
 #include <hardware/sync.h>
 #include <FreeRTOS.h>
+#include <task.h>
 #include <semphr.h>
 #include <pico-plat.h>
 
@@ -46,14 +47,51 @@
 #define SERIAL_PBUF_SIZE  512
 
 struct serial_buf {
-    unsigned int rp;
-    unsigned int wp;
+    volatile unsigned int rp;
+    volatile unsigned int wp;
     uint32_t marker1;
     char buf[SERIAL_BUF_BUF_SIZE];
     uint32_t marker2;
     char pbuf[SERIAL_PBUF_SIZE];
     uint32_t marker3;
 };
+
+/* One slot is left empty so wp == rp always means empty, never full. */
+static unsigned int serial_ring_used(const struct serial_buf *sb)
+{
+    unsigned int rp = sb->rp;
+    unsigned int wp = sb->wp;
+
+    if (wp < rp) {
+        return SERIAL_BUF_BUF_SIZE - rp + wp;
+    }
+
+    return wp - rp;
+}
+
+static void serial_irq_read(uart_inst_t *uart, struct serial_buf *sb,
+                            SemaphoreHandle_t sem)
+{
+    unsigned int wp = sb->wp;
+    BaseType_t xHigherPriorityTaskWoken = pdFALSE;
+
+    while (uart_is_readable(uart)) {
+        char c = (char) uart_getc(uart);
+        unsigned int next = (wp + 1u) % SERIAL_BUF_BUF_SIZE;
+
+        /* Drain the UART FIFO even when the software buffer is full so the
+         * IRQ does not stick asserted. Drop the new byte rather than
+         * overwriting unread data (which would look like an empty buffer). */
+        if (next != sb->rp) {
+            sb->buf[wp] = c;
+            wp = next;
+        }
+    }
+    sb->wp = wp;
+
+    xSemaphoreGiveFromISR(sem, &xHigherPriorityTaskWoken);
+    portYIELD_FROM_ISR(xHigherPriorityTaskWoken);
+}
 
 static struct serial_buf uart0_buf = {
     .rp = 0,
@@ -80,38 +118,12 @@ SemaphoreHandle_t uart1_sem = NULL;
 
 static void serial0_interrupt_handler(void)
 {
-    unsigned int wp;
-    volatile char *dst;
-    BaseType_t xHigherPriorityTaskWoken = pdFALSE;
-
-    dst = uart0_buf.buf;
-    wp = uart0_buf.wp;
-    while (uart_is_readable(uart0)) {
-        dst[wp] = (char) uart_get_hw(uart0)->dr;
-        wp = ((wp + 1) % SERIAL_BUF_BUF_SIZE);
-    }
-    uart0_buf.wp = wp;
-
-    xSemaphoreGiveFromISR(uart0_sem, &xHigherPriorityTaskWoken);
-    portYIELD_FROM_ISR(xHigherPriorityTaskWoken);
+    serial_irq_read(uart0, &uart0_buf, uart0_sem);
 }
 
 static void serial1_interrupt_handler(void)
 {
-    unsigned int wp;
-    volatile char *dst;
-    BaseType_t xHigherPriorityTaskWoken = pdFALSE;
-
-    dst = uart1_buf.buf;
-    wp = uart1_buf.wp;
-    while (uart_is_readable(uart1)) {
-        dst[wp] = (char) uart_get_hw(uart1)->dr;
-        wp = ((wp + 1) % SERIAL_BUF_BUF_SIZE);
-    }
-    uart1_buf.wp = wp;
-
-    xSemaphoreGiveFromISR(uart1_sem, &xHigherPriorityTaskWoken);
-    portYIELD_FROM_ISR(xHigherPriorityTaskWoken);
+    serial_irq_read(uart1, &uart1_buf, uart1_sem);
 }
 
 void serial_init(void)
@@ -189,8 +201,11 @@ int serial_write(unsigned int inst, const uint8_t *data, size_t len)
     }
 
     for (size_t i = 0; i < len; i++) {
-        if (!uart_is_writable(uart)) {
-            break;
+        while (!uart_is_writable(uart)) {
+            /* Hardware drains the TX FIFO; yield so other tasks can run. */
+            if (xTaskGetSchedulerState() == taskSCHEDULER_RUNNING) {
+                taskYIELD();
+            }
         }
 
         uart_get_hw(uart)->dr = data[i];
@@ -226,13 +241,40 @@ int serial_vprintf(unsigned int inst, const char *format, va_list ap)
     }
 
     ret = vsnprintf(pbuf, SERIAL_PBUF_SIZE - 1, format, ap);
+    if (ret < 0) {
+        ret = -1;
+        goto done;
+    }
+    if (ret > (int) (SERIAL_PBUF_SIZE - 1)) {
+        ret = SERIAL_PBUF_SIZE - 1;
+    }
 
-    for (int i = 0; (i < ret) && (i < SERIAL_PBUF_SIZE); i++) {
+    for (int i = 0; i < ret; ) {
+        int n;
+
         if (pbuf[i] == '\n') {
-            while (serial_write(inst, (const uint8_t *) "\r", 1) != 1);
+            n = serial_write(inst, (const uint8_t *) "\r\n", 2);
+            if (n != 2) {
+                ret = i;
+                goto done;
+            }
+            i++;
+            continue;
         }
 
-        while (serial_write(inst, (const uint8_t *) (pbuf + i), 1) != 1);
+        {
+            int run = i + 1;
+            while ((run < ret) && (pbuf[run] != '\n')) {
+                run++;
+            }
+            n = serial_write(inst, (const uint8_t *) (pbuf + i),
+                             (size_t) (run - i));
+            if (n != (run - i)) {
+                ret = i + ((n > 0) ? n : 0);
+                goto done;
+            }
+            i = run;
+        }
     }
 
 done:
@@ -251,11 +293,7 @@ int serial_rx_ready(unsigned int inst)
     default: ret = -1; goto done; break;
     }
 
-    if (serial_buf->wp < serial_buf->rp) {
-        ret = SERIAL_BUF_BUF_SIZE - serial_buf->rp + serial_buf->wp;
-    } else {
-        ret = serial_buf->wp - serial_buf->rp;
-    }
+    ret = (int) serial_ring_used(serial_buf);
 
 done:
 
@@ -285,7 +323,7 @@ int serial_read(unsigned int inst, uint8_t *data, size_t len)
         data++;
         len--;
         ret++;
-        rp = (rp + 1) % size;
+        rp = (rp + 1u) % size;
     }
 
     serial_buf->rp = rp;

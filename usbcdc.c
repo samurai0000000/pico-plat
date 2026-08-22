@@ -4,10 +4,14 @@
  * Copyright (C) 2025, Charles Chiou
  */
 
+#include <string.h>
+#include <stdio.h>
+#include <stdbool.h>
 #include <tusb.h>
 #include <bsp/board_api.h>
 #include <pico/stdio.h>
 #include <FreeRTOS.h>
+#include <task.h>
 #include <semphr.h>
 #include <pico-plat.h>
 
@@ -92,8 +96,8 @@ static tusb_desc_device_qualifier_t const desc_device_qualifier = {
 };
 
 struct serial_buf {
-    unsigned int rp;
-    unsigned int wp;
+    volatile unsigned int rp;
+    volatile unsigned int wp;
     char buf[SERIAL_BUF_BUF_SIZE];
 };
 
@@ -107,6 +111,76 @@ static char pbuf[SERIAL_PBUF_SIZE];
 
 SemaphoreHandle_t cdc_sem = NULL;
 static SemaphoreHandle_t cdc_mutex = NULL;
+
+/* One slot is left empty so wp == rp always means empty, never full. */
+static unsigned int cdc_ring_used(void)
+{
+    unsigned int rp = cdc_rx_buf.rp;
+    unsigned int wp = cdc_rx_buf.wp;
+
+    if (wp < rp) {
+        return SERIAL_BUF_BUF_SIZE - rp + wp;
+    }
+
+    return wp - rp;
+}
+
+/* Copy TinyUSB CDC RX into the ring without overwriting unread bytes.
+ * Leftover bytes stay in TinyUSB so the host is NAKed (flow control). */
+static void cdc_rx_drain_tud(uint8_t itf)
+{
+    uint8_t tmp[CFG_TUD_CDC_RX_BUFSIZE];
+    unsigned int wp = cdc_rx_buf.wp;
+    bool wrote = false;
+
+    for (;;) {
+        unsigned int rp = cdc_rx_buf.rp;
+        unsigned int used;
+        unsigned int space;
+        unsigned int contig;
+        uint32_t avail;
+        uint32_t n;
+
+        if (wp < rp) {
+            used = SERIAL_BUF_BUF_SIZE - rp + wp;
+        } else {
+            used = wp - rp;
+        }
+        space = SERIAL_BUF_BUF_SIZE - 1u - used;
+        avail = tud_cdc_n_available(itf);
+        if ((space == 0) || (avail == 0)) {
+            break;
+        }
+
+        n = avail;
+        if (n > space) {
+            n = space;
+        }
+        if (n > sizeof(tmp)) {
+            n = sizeof(tmp);
+        }
+        contig = SERIAL_BUF_BUF_SIZE - wp;
+        if (n > contig) {
+            n = contig;
+        }
+
+        n = tud_cdc_n_read(itf, tmp, n);
+        if (n == 0) {
+            break;
+        }
+
+        memcpy(&cdc_rx_buf.buf[wp], tmp, n);
+        wp = (wp + n) % SERIAL_BUF_BUF_SIZE;
+        wrote = true;
+    }
+
+    if (wrote) {
+        cdc_rx_buf.wp = wp;
+        if (cdc_sem) {
+            xSemaphoreGive(cdc_sem);
+        }
+    }
+}
 
 const uint8_t *tud_descriptor_device_cb(void)
 {
@@ -164,34 +238,7 @@ const uint16_t *tud_descriptor_string_cb(uint8_t index, uint16_t langid)
 
 void tud_cdc_rx_cb(uint8_t itf)
 {
-    uint8_t buf[CFG_TUD_CDC_RX_BUFSIZE];
-    size_t count;
-    unsigned int wp;
-    const char *src = (const char *) buf;
-    char *dst = cdc_rx_buf.buf;
-
-    if (tud_cdc_n_available(itf) == 0) {
-        goto done;
-    }
-
-    count = tud_cdc_n_read(itf, buf, sizeof(buf));
-
-    wp = cdc_rx_buf.wp;
-    while (count > 0) {
-        dst[wp] = *src;
-        src++;
-        wp = ((wp + 1) % SERIAL_BUF_BUF_SIZE);
-        count--;
-    }
-    cdc_rx_buf.wp = wp;
-
-    if (cdc_sem) {
-        xSemaphoreGive(cdc_sem);
-    }
-
-done:
-
-    return;
+    cdc_rx_drain_tud(itf);
 }
 
 void tud_mount_cb(void)
@@ -239,6 +286,8 @@ void usbcdc_task(void)
 {
     xSemaphoreTake(cdc_mutex, portMAX_DELAY);
     tud_task();
+    /* Pull any leftover CDC RX now that the ring may have space. */
+    cdc_rx_drain_tud(ITF_NUM_CDC_0);
     xSemaphoreGive(cdc_mutex);
 }
 
@@ -255,30 +304,45 @@ int usbcdc_write(const void *buf, size_t len)
     int itf = ITF_NUM_CDC_0;
     const uint8_t *data = (const uint8_t *) buf;
 
-    xSemaphoreTake(cdc_mutex, portMAX_DELAY);
-
     while (len > 0) {
-        uint32_t size;
-        int wl;
+        uint32_t avail;
+        uint32_t n;
+        int wl = 0;
 
-        size = tud_cdc_n_write_available(itf) < len ?
-            tud_cdc_n_write_available(itf) : len;
+        xSemaphoreTake(cdc_mutex, portMAX_DELAY);
 
-        wl = tud_cdc_n_write(itf, data, size);
-        if (wl == 0) {
-            break;
+        if (!tud_cdc_n_connected(itf)) {
+            xSemaphoreGive(cdc_mutex);
+            goto done;
         }
 
-        len -= wl;
-        data += wl;
-        ret += wl;
+        avail = tud_cdc_n_write_available(itf);
+        if (avail == 0) {
+            /* Drop the mutex so usbcdc_task() can run tud_task() and drain
+             * the IN endpoint. Holding it here would deadlock and drop data. */
+            tud_cdc_n_write_flush(itf);
+            xSemaphoreGive(cdc_mutex);
+            vTaskDelay(1);
+            continue;
+        }
+
+        n = (avail < (uint32_t) len) ? avail : (uint32_t) len;
+        wl = (int) tud_cdc_n_write(itf, data, n);
+        if (wl > 0) {
+            tud_cdc_n_write_flush(itf);
+            len -= (size_t) wl;
+            data += wl;
+            ret += wl;
+        }
+
+        xSemaphoreGive(cdc_mutex);
+
+        if (wl <= 0) {
+            vTaskDelay(1);
+        }
     }
 
-    if (ret > 0) {
-        tud_cdc_n_write_flush(itf);
-    }
-
-    xSemaphoreGive(cdc_mutex);
+done:
 
     return ret;
 }
@@ -301,16 +365,38 @@ int usbcdc_vprintf(const char *format, va_list ap)
     int len;
 
     len = vsnprintf(pbuf, SERIAL_PBUF_SIZE - 1, format, ap);
+    if (len < 0) {
+        return -1;
+    }
+    if (len > (int) (SERIAL_PBUF_SIZE - 1)) {
+        len = SERIAL_PBUF_SIZE - 1;
+    }
 
-    for (int i = 0; i < len; i++, ret++) {
+    for (int i = 0; i < len; ) {
+        int n;
+
         if (pbuf[i] == '\n') {
-            if (usbcdc_write("\r", 1) != 1) {
+            n = usbcdc_write("\r\n", 2);
+            if (n != 2) {
                 break;
             }
+            i++;
+            ret++;
+            continue;
         }
 
-        if (usbcdc_write(pbuf + i, 1) != 1) {
-            break;
+        {
+            int run = i + 1;
+            while ((run < len) && (pbuf[run] != '\n')) {
+                run++;
+            }
+            n = usbcdc_write(pbuf + i, (size_t) (run - i));
+            if (n != (run - i)) {
+                ret += (n > 0) ? n : 0;
+                break;
+            }
+            ret += n;
+            i = run;
         }
     }
 
@@ -319,15 +405,7 @@ int usbcdc_vprintf(const char *format, va_list ap)
 
 int usbcdc_rx_ready(void)
 {
-    int ret = 0;
-
-    if (cdc_rx_buf.wp < cdc_rx_buf.rp) {
-        ret = SERIAL_BUF_BUF_SIZE - cdc_rx_buf.rp + cdc_rx_buf.wp;
-    } else {
-        ret = cdc_rx_buf.wp - cdc_rx_buf.rp;
-    }
-
-    return ret;
+    return (int) cdc_ring_used();
 }
 
 int usbcdc_read(void *buf, size_t len)
@@ -348,7 +426,7 @@ int usbcdc_read(void *buf, size_t len)
         dst++;
         len--;
         ret++;
-        rp = (rp + 1) % size;
+        rp = (rp + 1u) % size;
     }
 
     cdc_rx_buf.rp = rp;
