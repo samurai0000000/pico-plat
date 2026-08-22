@@ -23,6 +23,7 @@ public:
     ~Bme280();
 
     bool isInitialized(void) const;
+    bool readSensorData(struct bme280_data &data);
 
 private:
 
@@ -46,6 +47,7 @@ private:
     uint32_t _i2cSda;
     uint32_t _i2cScl;
 
+    uint32_t _delay;
     bool _initialized;
 
 };

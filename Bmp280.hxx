@@ -1,0 +1,71 @@
+/*
+ * Bmp280.hxx
+ *
+ * Copyright (C) 2025, Charles Chiou
+ */
+
+#ifndef BMP280_HXX
+#define BMP280_HXX
+
+#include <string>
+#include <memory>
+
+using namespace std;
+
+class Bmp280 {
+
+public:
+
+    Bmp280(uint32_t i2cPort, uint32_t i2cSda, uint32_t i2cScl);
+    ~Bmp280();
+
+    bool isPresent(void) const;
+    bool read(float &temperature, float &pressure);
+
+private:
+
+    void probe(void);
+    int32_t convert(int32_t temp);
+    int32_t convertTemp(int32_t temp);
+    int32_t convertPressure(int32_t pressure, int32_t temp);
+    bool i2c_read(uint8_t addr, uint8_t *data, size_t len);
+    bool i2c_write(uint8_t addr, const uint8_t *data, size_t len);
+    bool i2c_write(uint8_t addr, uint8_t data);
+
+    void *_i2cPort;
+    uint32_t _i2cSda;
+    uint32_t _i2cScl;
+    uint8_t _i2cAddr;
+    uint32_t _delay;
+    bool _initialized;
+    bool _present;
+    struct calib_params {
+        // temperature params
+        uint16_t dig_t1;
+        int16_t  dig_t2;
+        int16_t  dig_t3;
+        // pressure params
+        uint16_t dig_p1;
+        int16_t  dig_p2;
+        int16_t  dig_p3;
+        int16_t  dig_p4;
+        int16_t  dig_p5;
+        int16_t  dig_p6;
+        int16_t  dig_p7;
+        int16_t  dig_p8;
+        int16_t  dig_p9;
+    } _params;
+
+};
+
+#endif
+
+/*
+ * Local variables:
+ * mode: C++
+ * c-file-style: "BSD"
+ * c-basic-offset: 4
+ * tab-width: 4
+ * indent-tabs-mode: nil
+ * End:
+ */

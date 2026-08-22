@@ -2,7 +2,7 @@
 #
 # Copyright (C) 2025, Charles Chiou
 
-cmake_minimum_required(VERSION 3.0)
+cmake_minimum_required(VERSION 3.13)
 
 project(pico-plat)
 
@@ -20,6 +20,7 @@ set(PICO_PLAT_SRCS
   ${CMAKE_CURRENT_SOURCE_DIR}/PicoPlatform.cxx
   ${CMAKE_CURRENT_SOURCE_DIR}/PicoShell.cxx
   ${CMAKE_CURRENT_SOURCE_DIR}/pico-bme280/bme280.c
+  ${CMAKE_CURRENT_SOURCE_DIR}/Bmp280.cxx
   ${CMAKE_CURRENT_SOURCE_DIR}/Bme280.cxx
   )
 

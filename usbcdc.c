@@ -67,8 +67,8 @@ static const char *string_desc_arr[] = {
     "LibPico",                        // 1: Manufacturer
     "Generic",                        // 2: Product
     NULL,                             // 3: Serials
-    "CDC"                             // 4: CDC Interface 0
-    "LibPicoCDCReset"                 // 6: Reset Interface
+    "CDC",                            // 4: CDC Interface 0
+    "LibPicoCDCReset"                 // 5: Reset Interface
 };
 
 static const uint8_t desc_configuration[] = {
@@ -271,7 +271,7 @@ int usbcdc_write(const void *buf, size_t len)
 
         len -= wl;
         data += wl;
-        ret++;
+        ret += wl;
     }
 
     if (ret > 0) {

@@ -8,6 +8,7 @@
 #define PICO_PLAT_H
 
 #include <stdarg.h>
+#include <stdint.h>
 
 #if !defined(EXTERN_C_BEGIN)
 #if defined(__cplusplus)
@@ -49,11 +50,11 @@ static inline int serial0_write(const uint8_t *data, size_t size)
 
 static inline int serial0_printf(const char *format, ...)
 {
-    int ret = 0;
+    int ret;
     va_list ap;
 
     va_start(ap, format);
-    serial_vprintf(0, format, ap);
+    ret = serial_vprintf(0, format, ap);
     va_end(ap);
 
     return ret;
@@ -86,11 +87,11 @@ static inline int serial1_write(const uint8_t *data, size_t size)
 
 static inline int serial1_printf(const char *format, ...)
 {
-    int ret = 0;
+    int ret;
     va_list ap;
 
     va_start(ap, format);
-    serial_vprintf(1, format, ap);
+    ret = serial_vprintf(1, format, ap);
     va_end(ap);
 
     return ret;
