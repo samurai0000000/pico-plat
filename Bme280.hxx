@@ -23,6 +23,7 @@ public:
     ~Bme280();
 
     bool isInitialized(void) const;
+    uint8_t i2cAddr(void) const;
     bool readSensorData(struct bme280_data &data);
 
 private:
@@ -37,6 +38,8 @@ private:
     static int8_t i2c_write(uint8_t reg_addr, const uint8_t *reg_data,
                             uint32_t len, void *intf_ptr);
 
+    int8_t configure(void);
+
     struct bme280_dev _dev;
     void *_spiPort;
     uint32_t _spiSck;
@@ -46,6 +49,7 @@ private:
     void *_i2cPort;
     uint32_t _i2cSda;
     uint32_t _i2cScl;
+    uint8_t _i2cAddr;
 
     uint32_t _delay;
     bool _initialized;

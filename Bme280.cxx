@@ -7,6 +7,7 @@
 #include <cstring>
 #include <FreeRTOS.h>
 #include <task.h>
+#include <pico/stdlib.h>
 #include <hardware/gpio.h>
 #include <hardware/spi.h>
 #include <hardware/i2c.h>
@@ -19,6 +20,12 @@ Bme280::Bme280(uint32_t spiPort, uint32_t spiSck,
     int8_t result = BME280_OK;
 
     _initialized = false;
+    _delay = 0;
+    _spiPort = NULL;
+    _i2cPort = NULL;
+    _i2cAddr = 0;
+    _i2cSda = 0;
+    _i2cScl = 0;
 
     switch (spiPort) {
     case 0: _spiPort = spi0; break;
@@ -40,16 +47,23 @@ Bme280::Bme280(uint32_t spiPort, uint32_t spiSck,
     _dev.delay_us = this->delay_us;
 
     spi_init((spi_inst_t *) _spiPort, 1000000);  // 1MHz
-    gpio_set_function(_spiSck,GPIO_FUNC_SPI);
+    gpio_set_function(_spiSck, GPIO_FUNC_SPI);
     gpio_set_function(_spiRx, GPIO_FUNC_SPI);
     gpio_set_function(_spiTx, GPIO_FUNC_SPI);
     gpio_init(_spiCs);
     gpio_set_dir(_spiCs, GPIO_OUT);
     gpio_put(_spiCs, true);
 
+    /* Datasheet: 2 ms after power-on */
+    sleep_ms(2);
+
     result = bme280_init(&_dev);
     if (result != BME280_OK) {
-        bzero(&_dev, sizeof(_dev));
+        goto done;
+    }
+
+    result = this->configure();
+    if (result != BME280_OK) {
         goto done;
     }
 
@@ -63,10 +77,21 @@ done:
 Bme280::Bme280(uint32_t i2cPort, uint32_t i2cSda, uint32_t i2cScl)
 {
     int8_t result = BME280_OK;
+    static const uint8_t addrs[] = {
+        BME280_I2C_ADDR_PRIM,
+        BME280_I2C_ADDR_SEC,
+    };
+    unsigned int i;
 
     _initialized = false;
-
-    bzero(&_dev, sizeof(_dev));
+    _delay = 0;
+    _spiPort = NULL;
+    _spiSck = 0;
+    _spiTx = 0;
+    _spiRx = 0;
+    _spiCs = 0;
+    _i2cPort = NULL;
+    _i2cAddr = 0;
 
     switch (i2cPort) {
     case 0: _i2cPort = i2c0; break;
@@ -77,22 +102,67 @@ Bme280::Bme280(uint32_t i2cPort, uint32_t i2cSda, uint32_t i2cScl)
     _i2cSda = i2cSda;
     _i2cScl = i2cScl;
 
+    bzero(&_dev, sizeof(_dev));
+
     _dev.intf_ptr = this;
     _dev.intf     = BME280_I2C_INTF;
     _dev.read     = this->i2c_read;
     _dev.write    = this->i2c_write;
     _dev.delay_us = this->delay_us;
 
-    i2c_init((i2c_inst_t *) _i2cPort, 400000); // 400kHz
+    /* 100 kHz: onboard pull-ups are weak; 400 kHz often NACKs. */
+    i2c_init((i2c_inst_t *) _i2cPort, 100000);
     gpio_set_function(_i2cSda, GPIO_FUNC_I2C);
     gpio_set_function(_i2cScl, GPIO_FUNC_I2C);
     gpio_pull_up(_i2cSda);
     gpio_pull_up(_i2cScl);
 
-    result = bme280_init(&_dev);
+    /* Datasheet: 2 ms after power-on; clones often need a bit more. */
+    sleep_ms(10);
+
+    result = BME280_E_DEV_NOT_FOUND;
+    for (i = 0; i < (sizeof(addrs) / sizeof(addrs[0])); i++) {
+        _i2cAddr = addrs[i];
+        result = bme280_init(&_dev);
+        if (result == BME280_OK) {
+            break;
+        }
+    }
+    if (result != BME280_OK) {
+        _i2cAddr = 0;
+        goto done;
+    }
+
+    result = this->configure();
     if (result != BME280_OK) {
         goto done;
     }
+
+    _initialized = true;
+
+done:
+
+    return;
+}
+
+Bme280::~Bme280()
+{
+
+}
+
+bool Bme280::isInitialized(void) const
+{
+    return _initialized;
+}
+
+uint8_t Bme280::i2cAddr(void) const
+{
+    return _i2cAddr;
+}
+
+int8_t Bme280::configure(void)
+{
+    int8_t result;
 
     _dev.settings.osr_h = BME280_OVERSAMPLING_1X;
     _dev.settings.osr_p = BME280_OVERSAMPLING_16X;
@@ -110,21 +180,9 @@ Bme280::Bme280(uint32_t i2cPort, uint32_t i2cSda, uint32_t i2cScl)
 
     _delay = bme280_cal_meas_delay(&_dev.settings);
 
-    _initialized = true;
-
 done:
 
-    return;
-}
-
-Bme280::~Bme280()
-{
-
-}
-
-bool Bme280::isInitialized(void) const
-{
-    return _initialized;
+    return result;
 }
 
 bool Bme280::readSensorData(struct bme280_data &data)
@@ -145,7 +203,8 @@ bool Bme280::readSensorData(struct bme280_data &data)
         goto done;
     }
 
-    _dev.delay_us(_delay, _dev.intf_ptr);
+    /* cal_meas_delay is a minimum; add 1 ms so the first sample is ready. */
+    _dev.delay_us(_delay + 1000u, _dev.intf_ptr);
 
     ret = bme280_get_sensor_data(BME280_ALL, &data, &_dev);
     if (ret != BME280_OK) {
@@ -163,32 +222,45 @@ done:
 void Bme280::delay_us(uint32_t period, void *intf_ptr)
 {
     static const uint32_t os_tick_us = (1000000 / configTICK_RATE_HZ);
+    uint32_t ms;
 
     (void)(intf_ptr);
 
-    if (period < os_tick_us) {
+    ms = (period + 999u) / 1000u;
+    if ((period < os_tick_us) ||
+        (ms == 0) ||
+        (xTaskGetSchedulerState() != taskSCHEDULER_RUNNING)) {
         sleep_us(period);
     } else {
-        vTaskDelay(pdMS_TO_TICKS(period / 1000));
+        vTaskDelay(pdMS_TO_TICKS(ms));
     }
 }
 
 int8_t Bme280::spi_read(uint8_t reg_addr, uint8_t *reg_data,
                         uint32_t len, void *intf_ptr)
 {
-    int8_t ret = BME280_OK;
+    int8_t ret = BME280_INTF_RET_SUCCESS;
     Bme280 *bme280 = (Bme280 *) intf_ptr;
+    int n;
 
-    if (bme280 == NULL) {
+    if ((bme280 == NULL) || (reg_data == NULL)) {
         ret = BME280_E_NULL_PTR;
         goto done;
     }
 
     gpio_put(bme280->_spiCs, 0);
-    spi_write_blocking((spi_inst_t *) bme280->_spiPort, &reg_addr, 1);
-    vTaskDelay(pdMS_TO_TICKS(10));
-    spi_read_blocking((spi_inst_t *) bme280->_spiPort, 0, reg_data, len);
+    n = spi_write_blocking((spi_inst_t *) bme280->_spiPort, &reg_addr, 1);
+    if (n != 1) {
+        gpio_put(bme280->_spiCs, 1);
+        ret = BME280_E_COMM_FAIL;
+        goto done;
+    }
+    n = spi_read_blocking((spi_inst_t *) bme280->_spiPort, 0, reg_data, len);
     gpio_put(bme280->_spiCs, 1);
+    if (n != (int) len) {
+        ret = BME280_E_COMM_FAIL;
+        goto done;
+    }
 
 done:
 
@@ -198,45 +270,71 @@ done:
 int8_t Bme280::spi_write(uint8_t reg_addr, const uint8_t *reg_data,
                          uint32_t len, void *intf_ptr)
 {
-    int8_t ret = BME280_OK;
+    int8_t ret = BME280_INTF_RET_SUCCESS;
     Bme280 *bme280 = (Bme280 *) intf_ptr;
+    int n;
 
-    if (bme280 == NULL) {
+    if ((bme280 == NULL) || (reg_data == NULL)) {
         ret = BME280_E_NULL_PTR;
         goto done;
     }
 
     gpio_put(bme280->_spiCs, 0);
-    spi_write_blocking((spi_inst_t *) bme280->_spiPort, &reg_addr, 1);
-    spi_write_blocking((spi_inst_t *) bme280->_spiPort, reg_data, len);
+    n = spi_write_blocking((spi_inst_t *) bme280->_spiPort, &reg_addr, 1);
+    if (n != 1) {
+        gpio_put(bme280->_spiCs, 1);
+        ret = BME280_E_COMM_FAIL;
+        goto done;
+    }
+    n = spi_write_blocking((spi_inst_t *) bme280->_spiPort, reg_data, len);
     gpio_put(bme280->_spiCs, 1);
+    if (n != (int) len) {
+        ret = BME280_E_COMM_FAIL;
+        goto done;
+    }
 
 done:
 
     return ret;
 }
 
+#ifndef BME280_I2C_TIMEOUT_US
+#define BME280_I2C_TIMEOUT_US  50000
+#endif
+
 int8_t Bme280::i2c_read(uint8_t reg_addr, uint8_t *reg_data,
                         uint32_t len, void *intf_ptr)
 {
-    int8_t ret = BME280_OK;
+    int8_t ret = BME280_INTF_RET_SUCCESS;
     Bme280 *bme280 = (Bme280 *) intf_ptr;
+    int n;
 
-    if (bme280 == NULL) {
+    if ((bme280 == NULL) || (reg_data == NULL)) {
         ret = BME280_E_NULL_PTR;
         goto done;
     }
 
-    i2c_write_blocking((i2c_inst_t *) bme280->_i2cPort,
-                       BME280_I2C_ADDR_PRIM,
-                       &reg_addr,
-                       sizeof(reg_addr),
-                       true);
-    i2c_read_blocking((i2c_inst_t *) bme280->_i2cPort,
-                      BME280_I2C_ADDR_PRIM,
-                      reg_data,
-                      len,
-                      false);
+    n = i2c_write_timeout_us((i2c_inst_t *) bme280->_i2cPort,
+                             bme280->_i2cAddr,
+                             &reg_addr,
+                             sizeof(reg_addr),
+                             true,
+                             BME280_I2C_TIMEOUT_US);
+    if (n != (int) sizeof(reg_addr)) {
+        ret = BME280_E_COMM_FAIL;
+        goto done;
+    }
+
+    n = i2c_read_timeout_us((i2c_inst_t *) bme280->_i2cPort,
+                            bme280->_i2cAddr,
+                            reg_data,
+                            len,
+                            false,
+                            BME280_I2C_TIMEOUT_US);
+    if (n != (int) len) {
+        ret = BME280_E_COMM_FAIL;
+        goto done;
+    }
 
 done:
 
@@ -246,24 +344,34 @@ done:
 int8_t Bme280::i2c_write(uint8_t reg_addr, const uint8_t *reg_data,
                          uint32_t len, void *intf_ptr)
 {
-    int8_t ret = BME280_OK;
+    int8_t ret = BME280_INTF_RET_SUCCESS;
     Bme280 *bme280 = (Bme280 *) intf_ptr;
+    uint8_t buf[32];
+    int n;
 
-    if (bme280 == NULL) {
+    if ((bme280 == NULL) || (reg_data == NULL)) {
         ret = BME280_E_NULL_PTR;
         goto done;
     }
 
-    i2c_write_blocking((i2c_inst_t *) bme280->_i2cPort,
-                       BME280_I2C_ADDR_PRIM,
-                       &reg_addr,
-                       sizeof(reg_addr),
-                       true);
-    i2c_write_blocking((i2c_inst_t *) bme280->_i2cPort,
-                       BME280_I2C_ADDR_PRIM,
-                       reg_data,
-                       len,
-                       false);
+    if ((len == 0) || ((len + 1) > sizeof(buf))) {
+        ret = BME280_E_INVALID_LEN;
+        goto done;
+    }
+
+    buf[0] = reg_addr;
+    memcpy(&buf[1], reg_data, len);
+
+    n = i2c_write_timeout_us((i2c_inst_t *) bme280->_i2cPort,
+                             bme280->_i2cAddr,
+                             buf,
+                             len + 1,
+                             false,
+                             BME280_I2C_TIMEOUT_US);
+    if (n != (int) (len + 1)) {
+        ret = BME280_E_COMM_FAIL;
+        goto done;
+    }
 
 done:
 

@@ -7,6 +7,8 @@
 #ifndef BMP280_HXX
 #define BMP280_HXX
 
+#include <cstddef>
+#include <cstdint>
 #include <string>
 #include <memory>
 
@@ -20,6 +22,7 @@ public:
     ~Bmp280();
 
     bool isPresent(void) const;
+    uint8_t i2cAddr(void) const;
     bool read(float &temperature, float &pressure);
 
 private:
@@ -36,7 +39,6 @@ private:
     uint32_t _i2cSda;
     uint32_t _i2cScl;
     uint8_t _i2cAddr;
-    uint32_t _delay;
     bool _initialized;
     bool _present;
     struct calib_params {

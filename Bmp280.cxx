@@ -5,34 +5,46 @@
  */
 
 #include <cstring>
-#include <FreeRTOS.h>
-#include <task.h>
+#include <pico/stdlib.h>
 #include <hardware/gpio.h>
-#include <hardware/spi.h>
 #include <hardware/i2c.h>
-#include <pico-plat.h>
 #include <pico-bme280/bme280.h>
 #include <Bmp280.hxx>
 
-#define BMP280_CHIP_ID      UINT8_C(0x58)
 #define NUM_CALIB_PARAMS    24
+
+static bool bmp280_is_chip_id(uint8_t id)
+{
+    return (id == UINT8_C(0x56)) ||
+           (id == UINT8_C(0x57)) ||
+           (id == UINT8_C(0x58));
+}
+
+static uint16_t le16u(const uint8_t *p)
+{
+    return (uint16_t) (((uint16_t) p[1] << 8) | p[0]);
+}
+
+static int16_t le16s(const uint8_t *p)
+{
+    return (int16_t) le16u(p);
+}
 
 Bmp280::Bmp280(uint32_t i2cPort, uint32_t i2cSda, uint32_t i2cScl)
 {
-    switch (i2cPort) {
-    case 1:
-        _i2cPort = i2c1;
-        break;
-    case 0:
-    default:
-        _i2cPort = i2c0;
-        break;
-    }
+    _i2cPort = NULL;
     _i2cSda = i2cSda;
     _i2cScl = i2cScl;
-    _i2cAddr = BME280_I2C_ADDR_PRIM;
+    _i2cAddr = 0;
     _initialized = false;
     _present = false;
+    bzero(&_params, sizeof(_params));
+
+    switch (i2cPort) {
+    case 0: _i2cPort = i2c0; break;
+    case 1: _i2cPort = i2c1; break;
+    default: return;
+    }
 
     probe();
 }
@@ -44,101 +56,106 @@ Bmp280::~Bmp280()
 
 void Bmp280::probe(void)
 {
-    bool result;
+    static const uint8_t addrs[] = {
+        BME280_I2C_ADDR_PRIM,
+        BME280_I2C_ADDR_SEC,
+    };
     uint8_t buf[NUM_CALIB_PARAMS];
+    unsigned int i, attempt;
 
-    if (_initialized) {
+    if ((_initialized) || (_i2cPort == NULL)) {
         return;
     }
 
-    i2c_init((i2c_inst_t *) _i2cPort, 100000); // 100kHz
+    i2c_init((i2c_inst_t *) _i2cPort, 400000); // 400kHz
     gpio_set_function(_i2cSda, GPIO_FUNC_I2C);
     gpio_set_function(_i2cScl, GPIO_FUNC_I2C);
     gpio_pull_up(_i2cSda);
     gpio_pull_up(_i2cScl);
 
-    _initialized = true;
+    /* Datasheet: 2 ms after power-on */
+    sleep_ms(2);
+
     _present = false;
 
-    for (_i2cAddr = BME280_I2C_ADDR_PRIM;
-         !_present && (_i2cAddr <= BME280_I2C_ADDR_SEC);
-         _i2cAddr++) {
-        for (unsigned int attempt = 0; attempt < 5; attempt++) {
-            uint8_t chip_id = 0x0;
+    for (i = 0; i < (sizeof(addrs) / sizeof(addrs[0])); i++) {
+        _i2cAddr = addrs[i];
+        for (attempt = 0; attempt < 3; attempt++) {
+            uint8_t chip_id = 0;
 
-            /* Soft-reset the device */
-            i2c_write(BME280_RESET_ADDR,
-                      BME280_SOFT_RESET_COMMAND);
-            vTaskDelay(pdMS_TO_TICKS(250));
-
-            /* Read chip ID */
-            result = i2c_read(BME280_CHIP_ID_ADDR, &chip_id, sizeof(chip_id));
-            if (result == false) {
-                vTaskDelay(pdMS_TO_TICKS(100));
+            if (!i2c_write(BME280_RESET_ADDR, BME280_SOFT_RESET_COMMAND)) {
+                sleep_ms(10);
                 continue;
             }
 
-            if (chip_id == BMP280_CHIP_ID) {
+            /* Datasheet: 2 ms for NVM copy after reset */
+            sleep_ms(2);
+
+            if (!i2c_read(BME280_CHIP_ID_ADDR, &chip_id, sizeof(chip_id))) {
+                sleep_ms(10);
+                continue;
+            }
+
+            if (bmp280_is_chip_id(chip_id)) {
                 _present = true;
                 break;
             }
         }
+        if (_present) {
+            break;
+        }
     }
 
     if (_present == false) {
+        _i2cAddr = 0;
         goto done;
     }
 
-    /* Configure 500ms sampling time, x16 filter */
-    i2c_write(BME280_CONFIG_ADDR,
-              ((0x04 << 5) | (0x05 << 2)) & 0xfc);
-
-    /* Set osrs_t x1, osrs_p x4, normal mode operation */
-    i2c_write(BME280_CTRL_MEAS_ADDR,
-              (0x01 << 5) | (0x03 << 2) | (0x03));
-
-    /* Get calibration parameters */
-    bzero(buf, sizeof(buf));
-    i2c_read(BME280_TEMP_PRESS_CALIB_DATA_ADDR, buf, NUM_CALIB_PARAMS);
-    _params.dig_t1 = (uint16_t) (buf[1]  << 8) | buf[0];
-    _params.dig_t2 =  (int16_t) (buf[3]  << 8) | buf[2];
-    _params.dig_t3 =  (int16_t) (buf[5]  << 8) | buf[4];
-    _params.dig_p1 = (uint16_t) (buf[7]  << 8) | buf[6];
-    _params.dig_p2 =  (int16_t) (buf[9]  << 8) | buf[8];
-    _params.dig_p3 =  (int16_t) (buf[11] << 8) | buf[10];
-    _params.dig_p4 =  (int16_t) (buf[13] << 8) | buf[12];
-    _params.dig_p5 =  (int16_t) (buf[15] << 8) | buf[14];
-    _params.dig_p6 =  (int16_t) (buf[17] << 8) | buf[16];
-    _params.dig_p7 =  (int16_t) (buf[19] << 8) | buf[18];
-    _params.dig_p8 =  (int16_t) (buf[21] << 8) | buf[20];
-    _params.dig_p9 =  (int16_t) (buf[23] << 8) | buf[22];
-
-    vTaskDelay(pdMS_TO_TICKS(250));
-
-    serial0_printf("buf=");
-    for (unsigned int i = 0; i < NUM_CALIB_PARAMS; i++) {
-        serial0_printf("%.2x", buf[i]);
+    /*
+     * CONFIG can only be written in sleep mode (post-reset).
+     * t_sb = 500 ms, filter coeff 16, 3-wire SPI disabled.
+     */
+    if (!i2c_write(BME280_CONFIG_ADDR, (0x04 << 5) | (0x04 << 2))) {
+        _present = false;
+        goto done;
     }
-    serial0_printf("\n");
 
-    serial0_printf("dig_t1=%u\n", _params.dig_t1);
-    serial0_printf("dig_t2=%d\n", _params.dig_t2);
-    serial0_printf("dig_t3=%d\n", _params.dig_t3);
-    serial0_printf("dig_p1=%u\n", _params.dig_p1);
-    serial0_printf("dig_p2=%d\n", _params.dig_p2);
-    serial0_printf("dig_p3=%d\n", _params.dig_p3);
-    serial0_printf("dig_p4=%d\n", _params.dig_p4);
-    serial0_printf("dig_p5=%d\n", _params.dig_p5);
-    serial0_printf("dig_p6=%d\n", _params.dig_p6);
-    serial0_printf("dig_p7=%d\n", _params.dig_p7);
-    serial0_printf("dig_p8=%d\n", _params.dig_p8);
-    serial0_printf("dig_p9=%d\n", _params.dig_p9);
+    /* osrs_t x1, osrs_p x4, normal mode */
+    if (!i2c_write(BME280_CTRL_MEAS_ADDR, (0x01 << 5) | (0x03 << 2) | 0x03)) {
+        _present = false;
+        goto done;
+    }
 
-    i2c_read(0x8f, &buf[0], 1);
-    i2c_read(0x8e, &buf[1], 1);
-    serial0_printf("p1_msb=0x%.2x p1_lsb=0x%.2x\n", buf[0], buf[1]);
+    bzero(buf, sizeof(buf));
+    if (!i2c_read(BME280_TEMP_PRESS_CALIB_DATA_ADDR, buf, NUM_CALIB_PARAMS)) {
+        _present = false;
+        goto done;
+    }
+
+    _params.dig_t1 = le16u(&buf[0]);
+    _params.dig_t2 = le16s(&buf[2]);
+    _params.dig_t3 = le16s(&buf[4]);
+    _params.dig_p1 = le16u(&buf[6]);
+    _params.dig_p2 = le16s(&buf[8]);
+    _params.dig_p3 = le16s(&buf[10]);
+    _params.dig_p4 = le16s(&buf[12]);
+    _params.dig_p5 = le16s(&buf[14]);
+    _params.dig_p6 = le16s(&buf[16]);
+    _params.dig_p7 = le16s(&buf[18]);
+    _params.dig_p8 = le16s(&buf[20]);
+    _params.dig_p9 = le16s(&buf[22]);
+
+    /* First normal-mode sample (osrs_t x1 + osrs_p x4) is ~12 ms */
+    sleep_ms(50);
+
+    _initialized = true;
 
 done:
+
+    if (_present == false) {
+        _initialized = false;
+        bzero(&_params, sizeof(_params));
+    }
 
     return;
 }
@@ -148,28 +165,37 @@ bool Bmp280::isPresent(void) const
     return _present;
 }
 
+uint8_t Bmp280::i2cAddr(void) const
+{
+    return _i2cAddr;
+}
+
 bool Bmp280::read(float &temperature, float &pressure)
 {
     bool result = false;
     uint8_t buf[6];
     int32_t t, p;
 
+    temperature = 0.0;
+    pressure = 0.0;
+
     if (!_initialized || !_present) {
         result = false;
-        temperature = 0.0;
-        pressure = 0.0;
         goto done;
     }
 
-    i2c_read(BME280_DATA_ADDR, buf, sizeof(buf));
+    if (!i2c_read(BME280_DATA_ADDR, buf, sizeof(buf))) {
+        result = false;
+        goto done;
+    }
 
     // Store the 20 bit read in a 32 bit signed integer for conversion
     p = (buf[0] << 12) | (buf[1] << 4) | (buf[2] >> 4);
     t = (buf[3] << 12) | (buf[4] << 4) | (buf[5] >> 4);
-    serial0_printf("p=%d, t=%d\n", p, t);
 
     temperature = ((float) convertTemp(t)) / 100.f;
-    pressure = ((float) convertPressure(p, t)) / 1000.f;
+    /* Datasheet 32-bit compensation returns Pa; convert to hPa. */
+    pressure = ((float) convertPressure(p, t)) / 100.f;
 
     result = true;
 
@@ -240,14 +266,22 @@ bool Bmp280::i2c_read(uint8_t addr, uint8_t *data, size_t len)
 {
     bool result = false;
     i2c_inst_t *inst = (i2c_inst_t *) _i2cPort;
+    int n;
 
-    if (!_initialized) {
-        result = false;
+    if ((inst == NULL) || (data == NULL) || (len == 0)) {
         goto done;
     }
 
-    i2c_write_blocking(inst, _i2cAddr, &addr, 1, true);
-    i2c_read_blocking(inst, _i2cAddr, data, len, false);
+    n = i2c_write_blocking(inst, _i2cAddr, &addr, 1, true);
+    if (n != 1) {
+        goto done;
+    }
+
+    n = i2c_read_blocking(inst, _i2cAddr, data, len, false);
+    if (n != (int) len) {
+        goto done;
+    }
+
     result = true;
 
 done:
@@ -259,14 +293,21 @@ bool Bmp280::i2c_write(uint8_t addr, const uint8_t *data, size_t len)
 {
     bool result = false;
     i2c_inst_t *inst = (i2c_inst_t *) _i2cPort;
+    uint8_t buf[32];
+    int n;
 
-    if (!_initialized) {
-        result = false;
+    if ((inst == NULL) || (data == NULL) || (len == 0) ||
+        ((len + 1) > sizeof(buf))) {
         goto done;
     }
 
-    i2c_write_blocking(inst, _i2cAddr, &addr, 1, true);
-    i2c_write_blocking(inst, _i2cAddr, data, len, false);
+    buf[0] = addr;
+    memcpy(&buf[1], data, len);
+
+    n = i2c_write_blocking(inst, _i2cAddr, buf, len + 1, false);
+    if (n != (int) (len + 1)) {
+        goto done;
+    }
 
     result = true;
 
@@ -275,27 +316,9 @@ done:
     return result;
 }
 
-
 bool Bmp280::i2c_write(uint8_t addr, uint8_t data)
 {
-    bool result = false;
-    i2c_inst_t *inst = (i2c_inst_t *) _i2cPort;
-    uint8_t buf[2];
-
-    if (!_initialized) {
-        result = false;
-        goto done;
-    }
-
-    buf[0] = addr;
-    buf[1] = data;
-    i2c_write_blocking(inst, _i2cAddr, buf, 2, false);
-
-    result = true;
-
-done:
-
-    return result;
+    return i2c_write(addr, &data, 1);
 }
 
 /*
