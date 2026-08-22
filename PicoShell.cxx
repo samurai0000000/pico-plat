@@ -21,6 +21,7 @@ PicoShell::PicoShell(enum PicoShellDevice device)
 {
     _noEcho = false;
     _inproc.i = 0;
+    _ungot_n = 0;
     _since_ms = to_ms_since_boot(get_absolute_time());
     _help_list.push_back("help");
     _help_list.push_back("version");
@@ -352,19 +353,47 @@ int PicoShell::rx_ready(void) const
     default: break;
     }
 
+    if (ret < 0) {
+        goto done;
+    }
+
+    ret += (int) _ungot_n;
+
+done:
+
     return ret;
 }
 
 int PicoShell::rx_read(uint8_t *buf, size_t size)
 {
     int ret = 0;
+    int n = 0;
+
+    while ((size > 0) && (_ungot_n > 0)) {
+        *buf = _ungot[--_ungot_n];
+        buf++;
+        size--;
+        ret++;
+    }
+
+    if (size == 0) {
+        goto done;
+    }
 
     switch (_device) {
-    case PICO_SHELL_USB_CDC: ret = usbcdc_read(buf, size); break;
-    case PICO_SHELL_SERIAL0: ret = serial0_read(buf, size); break;
-    case PICO_SHELL_SERIAL1: ret = serial1_read(buf, size); break;
+    case PICO_SHELL_USB_CDC: n = usbcdc_read(buf, size); break;
+    case PICO_SHELL_SERIAL0: n = serial0_read(buf, size); break;
+    case PICO_SHELL_SERIAL1: n = serial1_read(buf, size); break;
     default: break;
     }
+
+    if (n > 0) {
+        ret += n;
+    } else if ((n < 0) && (ret == 0)) {
+        ret = n;
+    }
+
+done:
 
     return ret;
 }
@@ -372,50 +401,75 @@ int PicoShell::rx_read(uint8_t *buf, size_t size)
 bool PicoShell::catch_ctr_c(bool untilFound)
 {
     bool result = false;
+    uint8_t saved[CMDLINE_SIZE];
+    unsigned int nsaved = 0;
 
     do {
         int ret;
-        char c;
+        uint8_t c;
 
-        ret = this->rx_read((uint8_t *) &c, 1);
+        ret = this->rx_read(&c, 1);
         if (ret < 0) {
-            break;
+            goto done;
         } else if (ret == 0) {
             if (!untilFound) {
-                break;
+                goto done;
             }
             vTaskDelay(1);
             continue;
         }
 
-        if (c == 0xff) {  // IAC received
+        if (c == 0xff) {
             static const uint8_t iac_do_tm[3] = { 0xff, 0xfd, 0x06, };
             static const uint8_t iac_will_tm[3] = { 0xff, 0xfb, 0x06, };
-            char iac2;
+            uint8_t iac2;
 
-            ret = this->rx_read((uint8_t *) &iac2, 1);
-            if (ret == 1) {
-                switch (iac2) {
-                case 0xf4:  // IAC IP (interrupt process)
-                    ret = this->tx_write(iac_do_tm, sizeof(iac_do_tm));
-                    ret = this->tx_write(iac_will_tm, sizeof(iac_will_tm));
-                    this->printf("\n> ");
-                    _inproc.i = 0;
-                    result = true;
-                    break;
-                default:
-                    break;
-                }
+            ret = this->rx_read(&iac2, 1);
+            while ((ret == 0) && untilFound) {
+                vTaskDelay(1);
+                ret = this->rx_read(&iac2, 1);
             }
-
-            break;
+            if ((ret == 1) && (iac2 == 0xf4)) {
+                (void) this->tx_write(iac_do_tm, sizeof(iac_do_tm));
+                (void) this->tx_write(iac_will_tm, sizeof(iac_will_tm));
+                this->printf("\n> ");
+                _inproc.i = 0;
+                result = true;
+                goto done;
+            }
+            if ((ret == 1) && (iac2 == '\x03')) {
+                if (nsaved < sizeof(saved)) {
+                    saved[nsaved++] = c;
+                }
+                result = true;
+                goto done;
+            }
+            if (nsaved < sizeof(saved)) {
+                saved[nsaved++] = c;
+            }
+            if ((ret == 1) && (nsaved < sizeof(saved))) {
+                saved[nsaved++] = iac2;
+            }
+        } else if (c == '\x03') {
+            result = true;
+            goto done;
+        } else if (nsaved < sizeof(saved)) {
+            saved[nsaved++] = c;
         }
 
-        if (c == '\x03') {
-            result = true;
-            break;
+        if (!untilFound && (this->rx_ready() == 0)) {
+            goto done;
         }
     } while (untilFound);
+
+done:
+
+    while (nsaved > 0) {
+        nsaved--;
+        if (_ungot_n < sizeof(_ungot)) {
+            _ungot[_ungot_n++] = saved[nsaved];
+        }
+    }
 
     return result;
 }

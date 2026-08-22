@@ -108,6 +108,9 @@ protected:
 
     struct inproc _inproc;
 
+    uint8_t _ungot[CMDLINE_SIZE];
+    unsigned int _ungot_n;
+
 };
 
 #endif
