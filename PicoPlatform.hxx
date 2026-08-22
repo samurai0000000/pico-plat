@@ -18,6 +18,12 @@ public:
 
     static shared_ptr<PicoPlatform> get(void);
 
+    /*
+     * Distinguish Pico vs Pico W from ADC3. Must run before
+     * cyw43_arch_init(): on Pico W, GPIO29 is the wireless clock after that.
+     */
+    static bool detectWireless(void);
+
     string getName(void) const;
 
     bool hasWireless(void) const;
