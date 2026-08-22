@@ -55,7 +55,7 @@ void PicoPlatform::setFactory(shared_ptr<PicoPlatform> (*factory)(void))
 shared_ptr<PicoPlatform> PicoPlatform::get(void)
 {
     shared_ptr<PicoPlatform> result;
-
+    ::
     lock_get();
     if (PicoPlatform::pp == NULL) {
         if (s_factory != NULL) {
@@ -83,29 +83,18 @@ bool PicoPlatform::detectWireless(void)
         return s_hasW != 0;
     }
 
-    /*
-     * Pico: ADC3 is VSYS/3 (~1.65 V on USB).
-     * Pico W: GPIO25 is CYW43 CS. Held low, ADC3 is not VSYS and reads
-     * well below 1 V (often ~0.4 V). The old 0.40–0.45 V window treated
-     * that as a non-W board.
-     */
     adc_init();
-    adc_gpio_init(29);
+    adc_set_temp_sensor_enabled(true);
+
     adc_select_input(3);
-
-    gpio_init(25);
-    gpio_set_dir(25, GPIO_IN);
-    gpio_pull_down(25);
-    sleep_us(20);
-
     voltage = adc_read() * conversion_factor;
-    s_hasW = (voltage < 1.0f) ? 1 : 0;
+    if ((voltage >= 0.35f) && (voltage < 0.45f)) {
+        s_hasW = false;
+    } else {
+        s_hasW = true;
+    }
 
-    /* Hand GPIO25/29 back so cyw43_arch_init() can claim them on Pico W. */
-    gpio_deinit(25);
-    gpio_deinit(29);
-
-    return s_hasW != 0;
+    return s_hasW == true;
 }
 
 bool PicoPlatform::initWireless(void)
