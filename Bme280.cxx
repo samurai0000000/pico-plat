@@ -111,7 +111,9 @@ Bme280::Bme280(uint32_t i2cPort, uint32_t i2cSda, uint32_t i2cScl)
     _dev.delay_us = this->delay_us;
 
     /* 100 kHz: onboard pull-ups are weak; 400 kHz often NACKs. */
+    plat_i2c_lock();
     i2c_init((i2c_inst_t *) _i2cPort, 100000);
+    plat_i2c_unlock();
     gpio_set_function(_i2cSda, GPIO_FUNC_I2C);
     gpio_set_function(_i2cScl, GPIO_FUNC_I2C);
     gpio_pull_up(_i2cSda);
@@ -314,6 +316,8 @@ int8_t Bme280::i2c_read(uint8_t reg_addr, uint8_t *reg_data,
         goto done;
     }
 
+    plat_i2c_lock();
+
     n = i2c_write_timeout_us((i2c_inst_t *) bme280->_i2cPort,
                              bme280->_i2cAddr,
                              &reg_addr,
@@ -322,7 +326,7 @@ int8_t Bme280::i2c_read(uint8_t reg_addr, uint8_t *reg_data,
                              BME280_I2C_TIMEOUT_US);
     if (n != (int) sizeof(reg_addr)) {
         ret = BME280_E_COMM_FAIL;
-        goto done;
+        goto unlock;
     }
 
     n = i2c_read_timeout_us((i2c_inst_t *) bme280->_i2cPort,
@@ -333,8 +337,12 @@ int8_t Bme280::i2c_read(uint8_t reg_addr, uint8_t *reg_data,
                             BME280_I2C_TIMEOUT_US);
     if (n != (int) len) {
         ret = BME280_E_COMM_FAIL;
-        goto done;
+        goto unlock;
     }
+
+unlock:
+
+    plat_i2c_unlock();
 
 done:
 
@@ -362,6 +370,8 @@ int8_t Bme280::i2c_write(uint8_t reg_addr, const uint8_t *reg_data,
     buf[0] = reg_addr;
     memcpy(&buf[1], reg_data, len);
 
+    plat_i2c_lock();
+
     n = i2c_write_timeout_us((i2c_inst_t *) bme280->_i2cPort,
                              bme280->_i2cAddr,
                              buf,
@@ -370,8 +380,12 @@ int8_t Bme280::i2c_write(uint8_t reg_addr, const uint8_t *reg_data,
                              BME280_I2C_TIMEOUT_US);
     if (n != (int) (len + 1)) {
         ret = BME280_E_COMM_FAIL;
-        goto done;
+        goto unlock;
     }
+
+unlock:
+
+    plat_i2c_unlock();
 
 done:
 

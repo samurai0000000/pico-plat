@@ -7,11 +7,10 @@
 #ifndef PICOSHELL_HXX
 #define PICOSHELL_HXX
 
+#include <cstdint>
+#include <cstdarg>
 #include <string>
-#include <memory>
 #include <vector>
-
-using namespace std;
 
 enum PicoShellDevice {
     PICO_SHELL_USB_CDC,
@@ -26,29 +25,29 @@ public:
     PicoShell(enum PicoShellDevice device);
     ~PicoShell();
 
-    inline void setBanner(const string &banner) {
+    inline void setBanner(const std::string &banner) {
         _banner = banner;
     }
-    inline void setVersion(const string &version) {
+    inline void setVersion(const std::string &version) {
         _version = version;
     }
-    inline void setBuilt(const string &built) {
+    inline void setBuilt(const std::string &built) {
         _built = built;
     }
-    inline void setCopyright(const string &copyright) {
+    inline void setCopyright(const std::string &copyright) {
         _copyright = copyright;
     }
 
-    inline const string &banner(void) const {
+    inline const std::string &banner(void) const {
         return _banner;
     }
-    inline const string &version(void) const {
+    inline const std::string &version(void) const {
         return _version;
     }
-    inline const string &built(void) const {
+    inline const std::string &built(void) const {
         return _built;
     }
-    inline const string &copyright(void) const {
+    inline const std::string &copyright(void) const {
         return _copyright;
     }
 
@@ -85,14 +84,14 @@ protected:
     virtual int bootsel(int argc, char **argv);
     virtual int unknown_command(int argc, char **argv);
 
-    time_t _since;
+    uint64_t _since_ms;
 
-    string _banner;
-    string _version;
-    string _built;
-    string _copyright;
+    std::string _banner;
+    std::string _version;
+    std::string _built;
+    std::string _copyright;
 
-    vector<string> _help_list;
+    std::vector<std::string> _help_list;
 
 protected:
 

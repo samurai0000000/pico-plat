@@ -7,11 +7,7 @@
 #ifndef BME280_HXX
 #define BME280_HXX
 
-#include <string>
-#include <memory>
 #include <pico-bme280/bme280.h>
-
-using namespace std;
 
 class Bme280 {
 

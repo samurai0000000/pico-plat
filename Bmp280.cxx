@@ -9,6 +9,7 @@
 #include <hardware/gpio.h>
 #include <hardware/i2c.h>
 #include <pico-bme280/bme280.h>
+#include <pico-plat.h>
 #include <Bmp280.hxx>
 
 #define NUM_CALIB_PARAMS    24
@@ -67,7 +68,10 @@ void Bmp280::probe(void)
         return;
     }
 
-    i2c_init((i2c_inst_t *) _i2cPort, 400000); // 400kHz
+    /* 100 kHz: same as BME280; onboard pull-ups are weak. */
+    plat_i2c_lock();
+    i2c_init((i2c_inst_t *) _i2cPort, 100000);
+    plat_i2c_unlock();
     gpio_set_function(_i2cSda, GPIO_FUNC_I2C);
     gpio_set_function(_i2cScl, GPIO_FUNC_I2C);
     gpio_pull_up(_i2cSda);
@@ -272,17 +276,23 @@ bool Bmp280::i2c_read(uint8_t addr, uint8_t *data, size_t len)
         goto done;
     }
 
+    plat_i2c_lock();
+
     n = i2c_write_blocking(inst, _i2cAddr, &addr, 1, true);
     if (n != 1) {
-        goto done;
+        goto unlock;
     }
 
     n = i2c_read_blocking(inst, _i2cAddr, data, len, false);
     if (n != (int) len) {
-        goto done;
+        goto unlock;
     }
 
     result = true;
+
+unlock:
+
+    plat_i2c_unlock();
 
 done:
 
@@ -304,12 +314,18 @@ bool Bmp280::i2c_write(uint8_t addr, const uint8_t *data, size_t len)
     buf[0] = addr;
     memcpy(&buf[1], data, len);
 
+    plat_i2c_lock();
+
     n = i2c_write_blocking(inst, _i2cAddr, buf, len + 1, false);
     if (n != (int) (len + 1)) {
-        goto done;
+        goto unlock;
     }
 
     result = true;
+
+unlock:
+
+    plat_i2c_unlock();
 
 done:
 

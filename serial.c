@@ -115,6 +115,21 @@ static struct serial_buf uart1_buf = {
 
 SemaphoreHandle_t uart0_sem = NULL;
 SemaphoreHandle_t uart1_sem = NULL;
+static SemaphoreHandle_t plat_i2c_mutex = NULL;
+
+void plat_i2c_lock(void)
+{
+    if (plat_i2c_mutex != NULL) {
+        xSemaphoreTake(plat_i2c_mutex, portMAX_DELAY);
+    }
+}
+
+void plat_i2c_unlock(void)
+{
+    if (plat_i2c_mutex != NULL) {
+        xSemaphoreGive(plat_i2c_mutex);
+    }
+}
 
 static void serial0_interrupt_handler(void)
 {
@@ -132,6 +147,8 @@ void serial_init(void)
     assert(uart0_sem != NULL);
     uart1_sem = xSemaphoreCreateBinary();
     assert(uart1_sem != NULL);
+    plat_i2c_mutex = xSemaphoreCreateMutex();
+    assert(plat_i2c_mutex != NULL);
 
     uart_init(uart0, UART0_BAUD_RATE);
     gpio_set_function(UART0_TX_PIN, GPIO_FUNC_UART);
@@ -160,6 +177,10 @@ void serial_deinit(void)
     uart0_sem = NULL;
     vSemaphoreDelete(uart1_sem);
     uart1_sem = NULL;
+    if (plat_i2c_mutex != NULL) {
+        vSemaphoreDelete(plat_i2c_mutex);
+        plat_i2c_mutex = NULL;
+    }
 }
 
 int serial_check_markers(unsigned int inst)

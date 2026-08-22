@@ -30,6 +30,8 @@ EXTERN_C_BEGIN
 
 extern void serial_init(void);
 extern void serial_deinit(void);
+extern void plat_i2c_lock(void);
+extern void plat_i2c_unlock(void);
 
 extern int serial_check_markers(unsigned int inst);
 extern int serial_write(unsigned int inst, const uint8_t *data, size_t size);

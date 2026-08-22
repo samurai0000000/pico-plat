@@ -14,10 +14,13 @@
 #include <pico-plat.h>
 #include <PicoPlatform.hxx>
 
+using namespace std;
+
 shared_ptr<PicoPlatform> PicoPlatform::pp = NULL;
 
 /* -1 unknown, 0 Pico, 1 Pico W */
 static int s_hasW = -1;
+static int s_cyw43_ok = 0;
 
 shared_ptr<PicoPlatform> PicoPlatform::get(void)
 {
@@ -65,6 +68,26 @@ bool PicoPlatform::detectWireless(void)
     return s_hasW != 0;
 }
 
+bool PicoPlatform::initWireless(void)
+{
+    if (!detectWireless()) {
+        s_cyw43_ok = 0;
+        return false;
+    }
+
+    if (s_cyw43_ok) {
+        return true;
+    }
+
+    if (cyw43_arch_init() == 0) {
+        s_cyw43_ok = 1;
+        return true;
+    }
+
+    s_cyw43_ok = 0;
+    return false;
+}
+
 PicoPlatform::PicoPlatform()
 {
     adc_init();
@@ -102,7 +125,9 @@ void PicoPlatform::flipOnboardLed(void)
 {
     _onboardLed = !_onboardLed;
     if (hasWireless()) {
-        cyw43_arch_gpio_put(CYW43_WL_GPIO_LED_PIN, _onboardLed);
+        if (s_cyw43_ok) {
+            cyw43_arch_gpio_put(CYW43_WL_GPIO_LED_PIN, _onboardLed);
+        }
     } else {
         gpio_put(25, _onboardLed);
     }

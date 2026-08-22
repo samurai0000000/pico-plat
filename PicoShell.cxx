@@ -4,9 +4,9 @@
  * Copyright (C) 2025, Charles Chiou
  */
 
-#include <ctime>
 #include <cstring>
 #include <malloc.h>
+#include <pico/time.h>
 #include <hardware/clocks.h>
 #include <FreeRTOS.h>
 #include <task.h>
@@ -14,12 +14,14 @@
 #include <PicoPlatform.hxx>
 #include <PicoShell.hxx>
 
+using namespace std;
+
 PicoShell::PicoShell(enum PicoShellDevice device)
     : _device(device)
 {
     _noEcho = false;
     _inproc.i = 0;
-    _since = time(NULL);
+    _since_ms = to_ms_since_boot(get_absolute_time());
     _help_list.push_back("help");
     _help_list.push_back("version");
     _help_list.push_back("system");
@@ -214,7 +216,7 @@ int PicoShell::version(int argc, char **argv)
 int PicoShell::system(int argc, char **argv)
 {
     int ret = 0;
-    time_t now;
+    uint64_t now_ms;
     unsigned int uptime, days, hour, min, sec;
     extern char __StackLimit, __bss_end__;
     struct mallinfo m = mallinfo();
@@ -225,8 +227,12 @@ int PicoShell::system(int argc, char **argv)
     shared_ptr<PicoPlatform> pico = PicoPlatform::get();
 
     this->printf("  Platform: %s\n", pico->getName().c_str());
-    now = time(NULL);
-    uptime = now - _since;
+    now_ms = to_ms_since_boot(get_absolute_time());
+    if (now_ms >= _since_ms) {
+        uptime = (unsigned int) ((now_ms - _since_ms) / 1000u);
+    } else {
+        uptime = 0;
+    }
     sec = (uptime % 60);
     min = (uptime / 60) % 60;
     hour = (uptime / 3600) % 24;
@@ -372,8 +378,14 @@ bool PicoShell::catch_ctr_c(bool untilFound)
         char c;
 
         ret = this->rx_read((uint8_t *) &c, 1);
-        if (ret == -1) {
+        if (ret < 0) {
             break;
+        } else if (ret == 0) {
+            if (!untilFound) {
+                break;
+            }
+            vTaskDelay(1);
+            continue;
         }
 
         if (c == 0xff) {  // IAC received

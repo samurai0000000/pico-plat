@@ -10,21 +10,20 @@
 #include <string>
 #include <memory>
 
-using namespace std;
-
-class PicoPlatform : public enable_shared_from_this<PicoPlatform> {
+class PicoPlatform : public std::enable_shared_from_this<PicoPlatform> {
 
 public:
 
-    static shared_ptr<PicoPlatform> get(void);
+    static std::shared_ptr<PicoPlatform> get(void);
 
     /*
      * Distinguish Pico vs Pico W from ADC3. Must run before
      * cyw43_arch_init(): on Pico W, GPIO29 is the wireless clock after that.
      */
     static bool detectWireless(void);
+    static bool initWireless(void);
 
-    string getName(void) const;
+    std::string getName(void) const;
 
     bool hasWireless(void) const;
     void flipOnboardLed(void);
@@ -34,8 +33,8 @@ public:
 
 protected:
 
-    friend shared_ptr<PicoPlatform> make_shared<PicoPlatform>();
-    static shared_ptr<PicoPlatform> pp;
+    friend std::shared_ptr<PicoPlatform> std::make_shared<PicoPlatform>();
+    static std::shared_ptr<PicoPlatform> pp;
 
     PicoPlatform();
     ~PicoPlatform();
