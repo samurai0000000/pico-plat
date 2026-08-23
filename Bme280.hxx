@@ -35,6 +35,7 @@ private:
                             uint32_t len, void *intf_ptr);
 
     int8_t configure(void);
+    int8_t wait_meas_done(void);
 
     struct bme280_dev _dev;
     void *_spiPort;

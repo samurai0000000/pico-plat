@@ -75,6 +75,7 @@ protected:
     virtual int rx_ready(void) const;
     virtual int rx_read(uint8_t *buf, size_t size);
     virtual bool catch_ctr_c(bool untilFound = true);
+    bool sleep_or_ctr_c(uint32_t ms);
 
     virtual int exec(char *cmdline);
     virtual int help(int argc, char **argv);

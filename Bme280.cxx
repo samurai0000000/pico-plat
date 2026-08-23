@@ -111,13 +111,7 @@ Bme280::Bme280(uint32_t i2cPort, uint32_t i2cSda, uint32_t i2cScl)
     _dev.delay_us = this->delay_us;
 
     /* 100 kHz: onboard pull-ups are weak; 400 kHz often NACKs. */
-    plat_i2c_lock();
-    i2c_init((i2c_inst_t *) _i2cPort, 100000);
-    plat_i2c_unlock();
-    gpio_set_function(_i2cSda, GPIO_FUNC_I2C);
-    gpio_set_function(_i2cScl, GPIO_FUNC_I2C);
-    gpio_pull_up(_i2cSda);
-    gpio_pull_up(_i2cScl);
+    plat_i2c_setup(_i2cPort, _i2cSda, _i2cScl);
 
     /* Datasheet: 2 ms after power-on; clones often need a bit more. */
     sleep_ms(10);
@@ -187,6 +181,32 @@ done:
     return result;
 }
 
+int8_t Bme280::wait_meas_done(void)
+{
+    int8_t result = BME280_OK;
+    unsigned int i;
+    uint8_t status;
+
+    for (i = 0; i < 5; i++) {
+        status = 0x08;
+        result = _dev.read(BME280_STATUS_REG_ADDR, &status, 1, _dev.intf_ptr);
+        if (result != BME280_INTF_RET_SUCCESS) {
+            goto done;
+        }
+        if ((status & UINT8_C(0x08)) == 0) {
+            result = BME280_OK;
+            goto done;
+        }
+        delay_us(10000, _dev.intf_ptr);
+    }
+
+    result = BME280_E_COMM_FAIL;
+
+done:
+
+    return result;
+}
+
 bool Bme280::readSensorData(struct bme280_data &data)
 {
     bool result = false;
@@ -207,6 +227,12 @@ bool Bme280::readSensorData(struct bme280_data &data)
 
     /* cal_meas_delay is a minimum; add 1 ms so the first sample is ready. */
     _dev.delay_us(_delay + 1000u, _dev.intf_ptr);
+
+    ret = this->wait_meas_done();
+    if (ret != BME280_OK) {
+        result = false;
+        goto done;
+    }
 
     ret = bme280_get_sensor_data(BME280_ALL, &data, &_dev);
     if (ret != BME280_OK) {
@@ -309,6 +335,7 @@ int8_t Bme280::i2c_read(uint8_t reg_addr, uint8_t *reg_data,
 {
     int8_t ret = BME280_INTF_RET_SUCCESS;
     Bme280 *bme280 = (Bme280 *) intf_ptr;
+    i2c_inst_t *inst;
     int n;
 
     if ((bme280 == NULL) || (reg_data == NULL)) {
@@ -316,26 +343,29 @@ int8_t Bme280::i2c_read(uint8_t reg_addr, uint8_t *reg_data,
         goto done;
     }
 
+    inst = (i2c_inst_t *) bme280->_i2cPort;
     plat_i2c_lock();
 
-    n = i2c_write_timeout_us((i2c_inst_t *) bme280->_i2cPort,
+    n = i2c_write_timeout_us(inst,
                              bme280->_i2cAddr,
                              &reg_addr,
                              sizeof(reg_addr),
                              true,
                              BME280_I2C_TIMEOUT_US);
     if (n != (int) sizeof(reg_addr)) {
+        plat_i2c_recover(inst, bme280->_i2cSda, bme280->_i2cScl);
         ret = BME280_E_COMM_FAIL;
         goto unlock;
     }
 
-    n = i2c_read_timeout_us((i2c_inst_t *) bme280->_i2cPort,
+    n = i2c_read_timeout_us(inst,
                             bme280->_i2cAddr,
                             reg_data,
                             len,
                             false,
                             BME280_I2C_TIMEOUT_US);
     if (n != (int) len) {
+        plat_i2c_recover(inst, bme280->_i2cSda, bme280->_i2cScl);
         ret = BME280_E_COMM_FAIL;
         goto unlock;
     }
@@ -354,6 +384,7 @@ int8_t Bme280::i2c_write(uint8_t reg_addr, const uint8_t *reg_data,
 {
     int8_t ret = BME280_INTF_RET_SUCCESS;
     Bme280 *bme280 = (Bme280 *) intf_ptr;
+    i2c_inst_t *inst;
     uint8_t buf[32];
     int n;
 
@@ -370,15 +401,17 @@ int8_t Bme280::i2c_write(uint8_t reg_addr, const uint8_t *reg_data,
     buf[0] = reg_addr;
     memcpy(&buf[1], reg_data, len);
 
+    inst = (i2c_inst_t *) bme280->_i2cPort;
     plat_i2c_lock();
 
-    n = i2c_write_timeout_us((i2c_inst_t *) bme280->_i2cPort,
+    n = i2c_write_timeout_us(inst,
                              bme280->_i2cAddr,
                              buf,
                              len + 1,
                              false,
                              BME280_I2C_TIMEOUT_US);
     if (n != (int) (len + 1)) {
+        plat_i2c_recover(inst, bme280->_i2cSda, bme280->_i2cScl);
         ret = BME280_E_COMM_FAIL;
         goto unlock;
     }

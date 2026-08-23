@@ -24,6 +24,7 @@ public:
 private:
 
     void probe(void);
+    bool wait_meas_done(void);
     int32_t convert(int32_t temp);
     int32_t convertTemp(int32_t temp);
     int32_t convertPressure(int32_t pressure, int32_t temp);

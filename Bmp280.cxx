@@ -8,11 +8,30 @@
 #include <pico/stdlib.h>
 #include <hardware/gpio.h>
 #include <hardware/i2c.h>
+#include <FreeRTOS.h>
+#include <task.h>
 #include <pico-bme280/bme280.h>
 #include <pico-plat.h>
 #include <Bmp280.hxx>
 
 #define NUM_CALIB_PARAMS    24
+#define BMP280_STATUS_MEASURING  UINT8_C(0x08)
+#define BMP280_CTRL_MEAS_FORCED  \
+    ((0x01 << 5) | (0x03 << 2) | BME280_FORCED_MODE)
+
+#ifndef BMP280_I2C_TIMEOUT_US
+#define BMP280_I2C_TIMEOUT_US  50000
+#endif
+
+static void bmp280_delay_ms(uint32_t ms)
+{
+    if ((ms == 0) ||
+        (xTaskGetSchedulerState() != taskSCHEDULER_RUNNING)) {
+        sleep_ms(ms);
+    } else {
+        vTaskDelay(pdMS_TO_TICKS(ms));
+    }
+}
 
 static bool bmp280_is_chip_id(uint8_t id)
 {
@@ -69,16 +88,10 @@ void Bmp280::probe(void)
     }
 
     /* 100 kHz: same as BME280; onboard pull-ups are weak. */
-    plat_i2c_lock();
-    i2c_init((i2c_inst_t *) _i2cPort, 100000);
-    plat_i2c_unlock();
-    gpio_set_function(_i2cSda, GPIO_FUNC_I2C);
-    gpio_set_function(_i2cScl, GPIO_FUNC_I2C);
-    gpio_pull_up(_i2cSda);
-    gpio_pull_up(_i2cScl);
+    plat_i2c_setup(_i2cPort, _i2cSda, _i2cScl);
 
     /* Datasheet: 2 ms after power-on */
-    sleep_ms(2);
+    bmp280_delay_ms(2);
 
     _present = false;
 
@@ -88,15 +101,15 @@ void Bmp280::probe(void)
             uint8_t chip_id = 0;
 
             if (!i2c_write(BME280_RESET_ADDR, BME280_SOFT_RESET_COMMAND)) {
-                sleep_ms(10);
+                bmp280_delay_ms(10);
                 continue;
             }
 
             /* Datasheet: 2 ms for NVM copy after reset */
-            sleep_ms(2);
+            bmp280_delay_ms(2);
 
             if (!i2c_read(BME280_CHIP_ID_ADDR, &chip_id, sizeof(chip_id))) {
-                sleep_ms(10);
+                bmp280_delay_ms(10);
                 continue;
             }
 
@@ -117,15 +130,9 @@ void Bmp280::probe(void)
 
     /*
      * CONFIG can only be written in sleep mode (post-reset).
-     * t_sb = 500 ms, filter coeff 16, 3-wire SPI disabled.
+     * t_sb unused in forced mode; filter coeff 16, 3-wire SPI disabled.
      */
     if (!i2c_write(BME280_CONFIG_ADDR, (0x04 << 5) | (0x04 << 2))) {
-        _present = false;
-        goto done;
-    }
-
-    /* osrs_t x1, osrs_p x4, normal mode */
-    if (!i2c_write(BME280_CTRL_MEAS_ADDR, (0x01 << 5) | (0x03 << 2) | 0x03)) {
         _present = false;
         goto done;
     }
@@ -148,9 +155,6 @@ void Bmp280::probe(void)
     _params.dig_p7 = le16s(&buf[18]);
     _params.dig_p8 = le16s(&buf[20]);
     _params.dig_p9 = le16s(&buf[22]);
-
-    /* First normal-mode sample (osrs_t x1 + osrs_p x4) is ~12 ms */
-    sleep_ms(50);
 
     _initialized = true;
 
@@ -188,6 +192,17 @@ bool Bmp280::read(float &temperature, float &pressure)
         goto done;
     }
 
+    /* osrs_t x1, osrs_p x4, forced mode — one sample, then sleep. */
+    if (!i2c_write(BME280_CTRL_MEAS_ADDR, BMP280_CTRL_MEAS_FORCED)) {
+        result = false;
+        goto done;
+    }
+
+    if (!wait_meas_done()) {
+        result = false;
+        goto done;
+    }
+
     if (!i2c_read(BME280_DATA_ADDR, buf, sizeof(buf))) {
         result = false;
         goto done;
@@ -196,6 +211,11 @@ bool Bmp280::read(float &temperature, float &pressure)
     // Store the 20 bit read in a 32 bit signed integer for conversion
     p = (buf[0] << 12) | (buf[1] << 4) | (buf[2] >> 4);
     t = (buf[3] << 12) | (buf[4] << 4) | (buf[5] >> 4);
+
+    if ((t == 0) && (p == 0)) {
+        result = false;
+        goto done;
+    }
 
     temperature = ((float) convertTemp(t)) / 100.f;
     /* Datasheet 32-bit compensation returns Pa; convert to hPa. */
@@ -206,6 +226,17 @@ bool Bmp280::read(float &temperature, float &pressure)
 done:
 
     return result;
+}
+
+bool Bmp280::wait_meas_done(void)
+{
+    /*
+     * osrs_t x1 + osrs_p x4 is ~12 ms. Tick is 10 ms, so wait two ticks
+     * instead of polling status (those I2C reads stole Ctrl-C).
+     */
+    bmp280_delay_ms(20);
+
+    return true;
 }
 
 int32_t Bmp280::convert(int32_t temp)
@@ -278,13 +309,17 @@ bool Bmp280::i2c_read(uint8_t addr, uint8_t *data, size_t len)
 
     plat_i2c_lock();
 
-    n = i2c_write_blocking(inst, _i2cAddr, &addr, 1, true);
+    n = i2c_write_timeout_us(inst, _i2cAddr, &addr, 1, true,
+                             BMP280_I2C_TIMEOUT_US);
     if (n != 1) {
+        plat_i2c_recover(inst, _i2cSda, _i2cScl);
         goto unlock;
     }
 
-    n = i2c_read_blocking(inst, _i2cAddr, data, len, false);
+    n = i2c_read_timeout_us(inst, _i2cAddr, data, len, false,
+                            BMP280_I2C_TIMEOUT_US);
     if (n != (int) len) {
+        plat_i2c_recover(inst, _i2cSda, _i2cScl);
         goto unlock;
     }
 
@@ -316,8 +351,10 @@ bool Bmp280::i2c_write(uint8_t addr, const uint8_t *data, size_t len)
 
     plat_i2c_lock();
 
-    n = i2c_write_blocking(inst, _i2cAddr, buf, len + 1, false);
+    n = i2c_write_timeout_us(inst, _i2cAddr, buf, len + 1, false,
+                             BMP280_I2C_TIMEOUT_US);
     if (n != (int) (len + 1)) {
+        plat_i2c_recover(inst, _i2cSda, _i2cScl);
         goto unlock;
     }
 

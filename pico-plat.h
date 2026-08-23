@@ -32,6 +32,8 @@ extern void serial_init(void);
 extern void serial_deinit(void);
 extern void plat_i2c_lock(void);
 extern void plat_i2c_unlock(void);
+extern void plat_i2c_setup(void *i2c, uint32_t sda, uint32_t scl);
+extern void plat_i2c_recover(void *i2c, uint32_t sda, uint32_t scl);
 
 extern int serial_check_markers(unsigned int inst);
 extern int serial_write(unsigned int inst, const uint8_t *data, size_t size);

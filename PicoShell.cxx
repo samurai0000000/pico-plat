@@ -474,6 +474,30 @@ done:
     return result;
 }
 
+bool PicoShell::sleep_or_ctr_c(uint32_t ms)
+{
+    TickType_t left;
+
+    if (this->catch_ctr_c(false)) {
+        return true;
+    }
+
+    left = pdMS_TO_TICKS(ms);
+    if ((ms > 0) && (left == 0)) {
+        left = 1;
+    }
+
+    while (left > 0) {
+        vTaskDelay(1);
+        left--;
+        if (this->catch_ctr_c(false)) {
+            return true;
+        }
+    }
+
+    return false;
+}
+
 /*
  * Local variables:
  * mode: C++

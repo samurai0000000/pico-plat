@@ -11,8 +11,10 @@
 #include <strings.h>
 #include <unistd.h>
 #include <pico/stdio.h>
+#include <pico/stdlib.h>
 #include <hardware/uart.h>
 #include <hardware/gpio.h>
+#include <hardware/i2c.h>
 #include <hardware/sync.h>
 #include <FreeRTOS.h>
 #include <task.h>
@@ -117,6 +119,10 @@ SemaphoreHandle_t uart0_sem = NULL;
 SemaphoreHandle_t uart1_sem = NULL;
 static SemaphoreHandle_t plat_i2c_mutex = NULL;
 
+#ifndef PLAT_I2C_BAUDRATE
+#define PLAT_I2C_BAUDRATE  100000
+#endif
+
 void plat_i2c_lock(void)
 {
     if (plat_i2c_mutex != NULL) {
@@ -129,6 +135,64 @@ void plat_i2c_unlock(void)
     if (plat_i2c_mutex != NULL) {
         xSemaphoreGive(plat_i2c_mutex);
     }
+}
+
+void plat_i2c_setup(void *i2c, uint32_t sda, uint32_t scl)
+{
+    plat_i2c_lock();
+    i2c_init((i2c_inst_t *) i2c, PLAT_I2C_BAUDRATE);
+    plat_i2c_unlock();
+    gpio_set_function(sda, GPIO_FUNC_I2C);
+    gpio_set_function(scl, GPIO_FUNC_I2C);
+    gpio_pull_up(sda);
+    gpio_pull_up(scl);
+}
+
+void plat_i2c_recover(void *i2c, uint32_t sda, uint32_t scl)
+{
+    i2c_inst_t *inst = (i2c_inst_t *) i2c;
+    unsigned int i;
+
+    if (inst == NULL) {
+        return;
+    }
+
+    i2c_deinit(inst);
+
+    gpio_init(sda);
+    gpio_init(scl);
+    gpio_pull_up(sda);
+    gpio_pull_up(scl);
+    gpio_set_dir(sda, GPIO_IN);
+    gpio_set_dir(scl, GPIO_IN);
+    sleep_us(5);
+
+    /* Clock SCL if a slave is holding SDA low after an aborted transfer. */
+    for (i = 0; i < 9; i++) {
+        if (gpio_get(sda)) {
+            break;
+        }
+        gpio_set_dir(scl, GPIO_OUT);
+        gpio_put(scl, 0);
+        sleep_us(5);
+        gpio_set_dir(scl, GPIO_IN);
+        sleep_us(5);
+    }
+
+    /* STOP: SDA low, SCL released, SDA released. */
+    gpio_set_dir(sda, GPIO_OUT);
+    gpio_put(sda, 0);
+    sleep_us(5);
+    gpio_set_dir(scl, GPIO_IN);
+    sleep_us(5);
+    gpio_set_dir(sda, GPIO_IN);
+    sleep_us(5);
+
+    gpio_set_function(sda, GPIO_FUNC_I2C);
+    gpio_set_function(scl, GPIO_FUNC_I2C);
+    gpio_pull_up(sda);
+    gpio_pull_up(scl);
+    i2c_init(inst, PLAT_I2C_BAUDRATE);
 }
 
 static void serial0_interrupt_handler(void)
