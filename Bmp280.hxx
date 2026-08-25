@@ -18,16 +18,17 @@ public:
     ~Bmp280();
 
     bool isPresent(void) const;
+    bool isInitialized(void) const;
     uint8_t i2cAddr(void) const;
     bool read(float &temperature, float &pressure);
 
 private:
 
     void probe(void);
+    bool softReset(void);
     bool wait_meas_done(void);
-    int32_t convert(int32_t temp);
-    int32_t convertTemp(int32_t temp);
-    int32_t convertPressure(int32_t pressure, int32_t temp);
+    double compensateTemp(int32_t raw_temp, double &t_fine);
+    double compensatePressure(int32_t raw_press, double t_fine);
     bool i2c_read(uint8_t addr, uint8_t *data, size_t len);
     bool i2c_write(uint8_t addr, const uint8_t *data, size_t len);
     bool i2c_write(uint8_t addr, uint8_t data);
