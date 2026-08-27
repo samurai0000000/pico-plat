@@ -172,6 +172,13 @@ int PicoShell::help(int argc, char **argv)
     int ret = 0;
     unsigned int i;
 
+    if ((argc >= 2) &&
+        ((strcmp(argv[1], "-h") == 0) || (strcmp(argv[1], "--help") == 0))) {
+        this->printf("Usage: %s [-h|--help]\n", argv[0]);
+        this->printf("  Display list of available commands.\n");
+        return 0;
+    }
+
     (void)(argc);
     (void)(argv);
 
@@ -181,10 +188,10 @@ int PicoShell::help(int argc, char **argv)
     for (vector<string>::const_iterator it = _help_list.begin();
          it != _help_list.end(); it++, i++) {
         if ((i % 4) == 0) {
-            this->printf("\t");
+            this->printf("  ");
         }
 
-        this->printf("%s\t", it->c_str());
+        this->printf("%-12s", it->c_str());
 
         if ((i % 4) == 3) {
             this->printf("\n");
@@ -201,6 +208,13 @@ int PicoShell::help(int argc, char **argv)
 int PicoShell::version(int argc, char **argv)
 {
     int ret = 0;
+
+    if ((argc >= 2) &&
+        ((strcmp(argv[1], "-h") == 0) || (strcmp(argv[1], "--help") == 0))) {
+        this->printf("Usage: %s [-h|--help]\n", argv[0]);
+        this->printf("  Display version and build information.\n");
+        return 0;
+    }
 
     (void)(argc);
     (void)(argv);
@@ -226,6 +240,15 @@ int PicoShell::system(int argc, char **argv)
     unsigned int free_heap = total_heap - used_heap;
     char cTaskListBuffer[512];
     shared_ptr<PicoPlatform> pico = PicoPlatform::get();
+
+    if ((argc >= 2) &&
+        ((strcmp(argv[1], "-h") == 0) || (strcmp(argv[1], "--help") == 0))) {
+        this->printf("Usage: %s [-h|--help] [-v]\n", argv[0]);
+        this->printf("  Display system uptime, heap, temperature, and FreeRTOS tasks.\n");
+        this->printf("Options:\n");
+        this->printf("  -v            Verbose output (show clock frequencies)\n");
+        return 0;
+    }
 
     this->printf("  Platform: %s\n", pico->getName().c_str());
     now_ms = to_ms_since_boot(get_absolute_time());
@@ -268,6 +291,13 @@ int PicoShell::reboot(int argc, char **argv)
 {
     int ret = 0;
 
+    if ((argc >= 2) &&
+        ((strcmp(argv[1], "-h") == 0) || (strcmp(argv[1], "--help") == 0))) {
+        this->printf("Usage: %s [-h|--help]\n", argv[0]);
+        this->printf("  Reboot the system.\n");
+        return 0;
+    }
+
     (void)(argc);
     (void)(argv);
     this->printf("Rebooting ...\n");
@@ -279,6 +309,13 @@ int PicoShell::reboot(int argc, char **argv)
 int PicoShell::bootsel(int argc, char **argv)
 {
     int ret = 0;
+
+    if ((argc >= 2) &&
+        ((strcmp(argv[1], "-h") == 0) || (strcmp(argv[1], "--help") == 0))) {
+        this->printf("Usage: %s [-h|--help]\n", argv[0]);
+        this->printf("  Reboot microcontroller into USB BOOTSEL mode for firmware flashing.\n");
+        return 0;
+    }
 
     (void)(argc);
     (void)(argv);
