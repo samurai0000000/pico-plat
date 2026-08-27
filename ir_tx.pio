@@ -55,7 +55,7 @@ static inline void ir_tx_program_init(PIO pio, uint sm, uint offset, uint pin, u
     pio_sm_set_consecutive_pindirs(pio, sm, pin, 1, true);
 
     // Shift left, no autopush/autopull, 32 bits
-    sm_config_set_out_shift(&c, false, false, 32);
+    sm_config_set_out_shift(&c, true, false, 32);
 
     // Set clock divider: 3 PIO cycles per carrier period
     if (freq_hz == 0) {
