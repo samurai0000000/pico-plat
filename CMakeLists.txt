@@ -24,6 +24,7 @@ set(PICO_PLAT_SRCS
   ${CMAKE_CURRENT_SOURCE_DIR}/Bme280.cxx
   ${CMAKE_CURRENT_SOURCE_DIR}/Imr2638.cxx
   ${CMAKE_CURRENT_SOURCE_DIR}/IrDecoder.cxx
+  ${CMAKE_CURRENT_SOURCE_DIR}/IrTransmitter.cxx
   )
 
 add_library(pico-plat INTERFACE)

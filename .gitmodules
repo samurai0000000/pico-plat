@@ -1,3 +1,6 @@
 [submodule "pico-bme280"]
 	path = pico-bme280
 	url = https://github.com/bablokb/pico-bme280
+[submodule "IRremoteESP8266"]
+	path = IRremoteESP8266
+	url = https://github.com/crankyoldgit/IRremoteESP8266.git

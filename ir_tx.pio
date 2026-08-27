@@ -1,0 +1,80 @@
+/*
+ * ir_tx.pio
+ *
+ * Copyright (C) 2026, Charles Chiou
+ */
+
+.program ir_tx
+
+; PIO program to transmit modulated IR signals (e.g. 38 kHz or 40 kHz).
+; The clock divider is configured such that 3 PIO clock cycles = 1 carrier period.
+; In mark_loop:
+;   set pins, 1 [0]   ; 1 cycle HIGH (33.3% duty cycle)
+;   set pins, 0 [0]   ; 1 cycle LOW
+;   jmp x-- mark_loop ; 1 cycle LOW -> Total 3 cycles per carrier period.
+; In space_loop:
+;   set pins, 0 [1]   ; 2 cycles LOW
+;   jmp x-- space_loop; 1 cycle LOW -> Total 3 cycles per carrier period (pin stays LOW).
+;
+; FIFO input word format (32 bits):
+;   Bit 31: 1 = Mark (burst of carrier), 0 = Space (silent / pin LOW)
+;   Bits 0-30: (Number of carrier cycles) - 1
+
+.wrap_target
+start:
+    pull block
+    out x, 31
+    out y, 1
+    jmp !y space_loop
+
+mark_loop:
+    set pins, 1 [0]
+    set pins, 0 [0]
+    jmp x-- mark_loop
+    jmp start
+
+space_loop:
+    set pins, 0 [1]
+    jmp x-- space_loop
+.wrap
+
+% c-sdk {
+#include "hardware/clocks.h"
+#include "hardware/gpio.h"
+
+static inline void ir_tx_program_init(PIO pio, uint sm, uint offset, uint pin, uint32_t freq_hz) {
+    pio_sm_config c = ir_tx_program_get_default_config(offset);
+
+    // Set pin as SET pin
+    sm_config_set_set_pins(&c, pin, 1);
+
+    // Initialize GPIO for PIO
+    pio_gpio_init(pio, pin);
+    gpio_set_dir(pin, GPIO_OUT);
+    gpio_put(pin, false);
+    pio_sm_set_consecutive_pindirs(pio, sm, pin, 1, true);
+
+    // Shift left, no autopush/autopull, 32 bits
+    sm_config_set_out_shift(&c, false, false, 32);
+
+    // Set clock divider: 3 PIO cycles per carrier period
+    if (freq_hz == 0) {
+        freq_hz = 38000;
+    }
+    float pio_clock = (float)(freq_hz * 3);
+    float div = (float)clock_get_hz(clk_sys) / pio_clock;
+    sm_config_set_clkdiv(&c, div);
+
+    // Load config and initialize state machine
+    pio_sm_init(pio, sm, offset, &c);
+}
+
+static inline void ir_tx_set_freq(PIO pio, uint sm, uint32_t freq_hz) {
+    if (freq_hz == 0) {
+        freq_hz = 38000;
+    }
+    float pio_clock = (float)(freq_hz * 3);
+    float div = (float)clock_get_hz(clk_sys) / pio_clock;
+    pio_sm_set_clkdiv(pio, sm, div);
+}
+%}
