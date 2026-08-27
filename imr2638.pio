@@ -1,0 +1,69 @@
+/*
+ * imr2638.pio
+ *
+ * Copyright (C) 2025, Charles Chiou
+ */
+
+.program imr2638_rx
+
+.wrap_target
+start:
+    ; Wait for pin to be 0 (Mark starts)
+    wait 0 pin 0
+
+    ; Initialize X = 0xFFFFFFFF
+    set x, 0
+    mov x, !x
+
+mark_loop:
+    jmp pin mark_end
+    jmp x-- mark_loop
+mark_end:
+    mov isr, !x
+    set y, 1
+    in y, 1
+    push noblock
+
+    ; Now in space (pin is 1). Initialize X = 0xFFFFFFFF
+    set x, 0
+    mov x, !x
+
+space_loop:
+    jmp pin space_check
+    jmp space_end
+space_check:
+    jmp x-- space_loop
+space_end:
+    mov isr, !x
+    set y, 0
+    in y, 1
+    push noblock
+.wrap
+
+% c-sdk {
+#include "hardware/clocks.h"
+#include "hardware/gpio.h"
+
+static inline void imr2638_rx_program_init(PIO pio, uint sm, uint offset, uint pin) {
+    pio_sm_config c = imr2638_rx_program_get_default_config(offset);
+
+    // Set input pin and jump pin
+    sm_config_set_in_pins(&c, pin);
+    sm_config_set_jmp_pin(&c, pin);
+
+    // Configure GPIO as PIO input with pull-up
+    pio_gpio_init(pio, pin);
+    gpio_set_pulls(pin, true, false);
+    pio_sm_set_consecutive_pindirs(pio, sm, pin, 1, false);
+
+    // Shift left, no autopush, 32 bits
+    sm_config_set_in_shift(&c, false, false, 32);
+
+    // Set clock divider: 2 cycles per count iteration -> 2.0 MHz
+    float div = (float)clock_get_hz(clk_sys) / 2000000.0f;
+    sm_config_set_clkdiv(&c, div);
+
+    // Load config and initialize state machine
+    pio_sm_init(pio, sm, offset, &c);
+}
+%}
